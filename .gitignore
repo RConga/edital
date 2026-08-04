@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+visto.json
+relatorio_*.txt
+editais_ti_*.html
+.env

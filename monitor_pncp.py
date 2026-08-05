@@ -23,6 +23,7 @@ import os
 import json
 import html
 import smtplib
+import time
 import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -79,7 +80,12 @@ BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 
 
 def buscar_contratacoes(data_inicial, data_final, modalidade, uf=None):
-    """Busca todas as páginas de contratações para uma modalidade/UF/período."""
+    """Busca todas as páginas de contratações para uma modalidade/UF/período.
+
+    A API do PNCP retorna 429 (Too Many Requests) se as páginas forem
+    consultadas rápido demais. Por isso: pequena pausa entre páginas e
+    retry com backoff quando o limite é atingido.
+    """
     resultados = []
     pagina = 1
     while True:
@@ -93,7 +99,14 @@ def buscar_contratacoes(data_inicial, data_final, modalidade, uf=None):
         if uf:
             params["uf"] = uf
 
-        resp = requests.get(BASE_URL, params=params, timeout=30)
+        resp = None
+        for tentativa in range(5):
+            resp = requests.get(BASE_URL, params=params, timeout=30)
+            if resp.status_code == 429:
+                time.sleep(3 * (tentativa + 1))
+                continue
+            break
+
         if resp.status_code == 204:
             break  # sem resultados
         resp.raise_for_status()
@@ -106,6 +119,7 @@ def buscar_contratacoes(data_inicial, data_final, modalidade, uf=None):
         if pagina >= total_paginas:
             break
         pagina += 1
+        time.sleep(0.4)  # evita novo 429 na próxima página
 
     return resultados
 
@@ -299,6 +313,7 @@ def main():
 
     vistos = carregar_cache()
     novos = []
+    erros = []
 
     ufs_para_buscar = UFS if UFS else [None]
 
@@ -308,7 +323,9 @@ def main():
             try:
                 itens = buscar_contratacoes(data_inicial, data_final, cod_modalidade, uf)
             except requests.RequestException as e:
-                print(f"[erro] Falha ao consultar PNCP: {e}")
+                msg = f"{nome_modalidade} | UF={uf or 'BR'}: {e}"
+                print(f"[erro] Falha ao consultar PNCP: {msg}")
+                erros.append(msg)
                 continue
 
             for item in itens:
@@ -321,12 +338,23 @@ def main():
                 novos.append((item, nome_modalidade))
 
     if not novos:
-        print("Nenhuma oportunidade nova de TI encontrada nesta execução.")
         salvar_cache(vistos)
+        if erros:
+            # Falha real (ex: rate limit da API) — não confundir com "nada encontrado".
+            # Sai com erro para o job do GitHub Actions ficar vermelho e não passar
+            # em silêncio como se a busca tivesse simplesmente dado zero resultados.
+            print("[erro] Execução incompleta, consultas com falha:")
+            for msg in erros:
+                print(f"  - {msg}")
+            raise SystemExit(1)
+        print("Nenhuma oportunidade nova de TI encontrada nesta execução.")
         return
 
     corpo = f"Encontradas {len(novos)} novas oportunidades de TI no PNCP:\n\n"
     corpo += "\n".join(formatar_item(item, nome) for item, nome in novos)
+    if erros:
+        corpo += "\n\n[aviso] Algumas consultas falharam e podem estar faltando oportunidades:\n"
+        corpo += "\n".join(f"- {msg}" for msg in erros)
     corpo += "\n\nO relatório visual completo está em anexo (abra no navegador)."
 
     print(corpo)

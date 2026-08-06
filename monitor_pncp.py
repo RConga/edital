@@ -82,9 +82,9 @@ BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 def buscar_contratacoes(data_inicial, data_final, modalidade, uf=None):
     """Busca todas as páginas de contratações para uma modalidade/UF/período.
 
-    A API do PNCP retorna 429 (Too Many Requests) se as páginas forem
-    consultadas rápido demais. Por isso: pequena pausa entre páginas e
-    retry com backoff quando o limite é atingido.
+    A API do PNCP às vezes retorna 429 (Too Many Requests) se as páginas
+    forem consultadas rápido demais, ou demora a responder (timeout). Por
+    isso: pequena pausa entre páginas e retry com backoff nos dois casos.
     """
     resultados = []
     pagina = 1
@@ -100,12 +100,22 @@ def buscar_contratacoes(data_inicial, data_final, modalidade, uf=None):
             params["uf"] = uf
 
         resp = None
+        ultimo_erro = None
         for tentativa in range(5):
-            resp = requests.get(BASE_URL, params=params, timeout=30)
+            try:
+                resp = requests.get(BASE_URL, params=params, timeout=60)
+            except requests.exceptions.RequestException as e:
+                ultimo_erro = e
+                resp = None
+                time.sleep(3 * (tentativa + 1))
+                continue
             if resp.status_code == 429:
                 time.sleep(3 * (tentativa + 1))
                 continue
             break
+
+        if resp is None:
+            raise ultimo_erro
 
         if resp.status_code == 204:
             break  # sem resultados

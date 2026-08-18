@@ -350,12 +350,23 @@ def main():
     if not novos:
         salvar_cache(vistos)
         if erros:
-            # Falha real (ex: rate limit da API) — não confundir com "nada encontrado".
-            # Sai com erro para o job do GitHub Actions ficar vermelho e não passar
-            # em silêncio como se a busca tivesse simplesmente dado zero resultados.
+            # Falha real (ex: PNCP fora do ar) — não confundir com "nada encontrado".
+            # Avisa por e-mail (se configurado) e sai com erro para o job do
+            # GitHub Actions ficar vermelho, em vez de passar em silêncio como
+            # se a busca tivesse simplesmente dado zero resultados.
             print("[erro] Execução incompleta, consultas com falha:")
             for msg in erros:
                 print(f"  - {msg}")
+            corpo_erro = (
+                f"A busca de hoje ({hoje.strftime('%d/%m/%Y')}) falhou e não foi "
+                f"possível concluir a consulta ao PNCP. Nenhuma oportunidade nova foi "
+                f"verificada nesta execução.\n\nFalhas:\n"
+            )
+            corpo_erro += "\n".join(f"- {msg}" for msg in erros)
+            enviar_email(
+                "[PNCP] Falha na execução de hoje — verificar manualmente",
+                corpo_erro,
+            )
             raise SystemExit(1)
         print("Nenhuma oportunidade nova de TI encontrada nesta execução.")
         return
